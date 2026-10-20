@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,12 +32,12 @@ interface UserSession {
   startedAt: string;
 }
 
-export default async function ExamPage({
+export default function ExamPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
+  const { id } = use(params);
   const router = useRouter();
   const [session, setSession] = useState<UserSession | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
