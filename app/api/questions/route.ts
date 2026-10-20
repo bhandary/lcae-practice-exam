@@ -27,6 +27,17 @@ export async function GET(request: Request) {
             where: { domain: d },
             orderBy: { id: 'asc' },
             take: 1000, // Get all questions for shuffling
+            select: {
+              id: true,
+              domain: true,
+              difficulty: true,
+              question: true,
+              optionA: true,
+              optionB: true,
+              optionC: true,
+              optionD: true,
+              // Exclude answer and justification - only send after submission
+            },
           });
         })
       );
@@ -46,6 +57,17 @@ export async function GET(request: Request) {
       const allQuestions = await prisma.question.findMany({
         where,
         orderBy: { id: 'asc' },
+        select: {
+          id: true,
+          domain: true,
+          difficulty: true,
+          question: true,
+          optionA: true,
+          optionB: true,
+          optionC: true,
+          optionD: true,
+          // Exclude answer and justification - only send after submission
+        },
       });
 
       // Shuffle and take requested count

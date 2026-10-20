@@ -18,9 +18,9 @@ interface Question {
   optionB: string;
   optionC: string;
   optionD: string;
-  answer: string;
-  justification: string;
-  source: string;
+  answer?: string;
+  justification?: string;
+  source?: string;
 }
 
 interface UserSession {
@@ -44,7 +44,7 @@ export default async function ExamPage({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<string>('');
   const [showFeedback, setShowFeedback] = useState(false);
-  const [answers, setAnswers] = useState<Record<string, { answer: string; correct: boolean }>>({});
+  const [answers, setAnswers] = useState<Record<string, { answer: string; correct: boolean; justification: string; correctAnswer: string; source: string }>>({});
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -104,23 +104,28 @@ export default async function ExamPage({
   const handleSubmitAnswer = async () => {
     if (!selectedAnswer || !currentQuestion) return;
 
-    const isCorrect = selectedAnswer === currentQuestion.answer;
-
-    setAnswers({
-      ...answers,
-      [currentQuestion.id]: { answer: selectedAnswer, correct: isCorrect },
-    });
-
-    // Save answer to database
-    await fetch('/api/answers', {
+    // Save answer to database and get correctness from server
+    const response = await fetch('/api/answers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         userSessionId: id,
         questionId: currentQuestion.id,
         selectedAnswer,
-        isCorrect,
       }),
+    });
+
+    const result = await response.json();
+
+    setAnswers({
+      ...answers,
+      [currentQuestion.id]: {
+        answer: selectedAnswer,
+        correct: result.isCorrect,
+        justification: result.justification,
+        correctAnswer: result.correctAnswer,
+        source: result.source,
+      },
     });
 
     setShowFeedback(true);
@@ -141,7 +146,6 @@ export default async function ExamPage({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        correctCount,
         completedAt: new Date().toISOString(),
       }),
     });
@@ -214,7 +218,7 @@ export default async function ExamPage({
               >
                 {['A', 'B', 'C', 'D'].map((option) => {
                   const optionText = currentQuestion[`option${option}` as keyof Question] as string;
-                  const isCorrectAnswer = option === currentQuestion.answer;
+                  const isCorrectAnswer = showFeedback && userAnswer && option === userAnswer.correctAnswer;
                   const isSelected = selectedAnswer === option;
                   
                   let className = 'flex items-start space-x-3 p-4 rounded-lg border-2 transition-all cursor-pointer';
@@ -247,26 +251,26 @@ export default async function ExamPage({
                 })}
               </RadioGroup>
 
-              {showFeedback && (
+              {showFeedback && userAnswer && (
                 <div className="space-y-4 p-4 bg-muted rounded-lg">
                   <div className="flex items-start gap-2">
-                    {userAnswer?.correct ? (
+                    {userAnswer.correct ? (
                       <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                     ) : (
                       <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
                     )}
                     <div className="space-y-2">
                       <p className="font-semibold">
-                        {userAnswer?.correct ? 'Correct!' : 'Incorrect'}
+                        {userAnswer.correct ? 'Correct!' : 'Incorrect'}
                       </p>
-                      {!userAnswer?.correct && (
+                      {!userAnswer.correct && (
                         <p className="text-sm">
-                          The correct answer is <strong>{currentQuestion.answer}</strong>
+                          The correct answer is <strong>{userAnswer.correctAnswer}</strong>
                         </p>
                       )}
-                      <p className="text-sm leading-relaxed">{currentQuestion.justification}</p>
+                      <p className="text-sm leading-relaxed">{userAnswer.justification}</p>
                       <p className="text-xs text-muted-foreground">
-                        Source: {currentQuestion.source}
+                        Source: {userAnswer.source}
                       </p>
                     </div>
                   </div>

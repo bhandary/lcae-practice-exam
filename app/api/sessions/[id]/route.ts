@@ -51,7 +51,24 @@ export async function PATCH(
 
     const { id } = await context.params;
     const body = await request.json();
-    const { correctCount, completedAt } = body;
+    const { completedAt } = body;
+
+    // Verify the session belongs to this user
+    const existingSession = await prisma.userSession.findUnique({
+      where: { id },
+    });
+
+    if (!existingSession || existingSession.userId !== session.user.id) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+
+    // Compute correctCount from actual answers - NEVER trust the client
+    const correctCount = await prisma.userAnswer.count({
+      where: {
+        userSessionId: id,
+        isCorrect: true,
+      },
+    });
 
     const userSession = await prisma.userSession.update({
       where: { id },
