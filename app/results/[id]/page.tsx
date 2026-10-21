@@ -211,16 +211,17 @@ export default async function ResultsPage({
                       <div className="text-sm space-y-1">
                         <p>
                           Your answer: <strong>{answer.selectedAnswer}</strong>
-                          {!answer.isCorrect && (
-                            <span className="text-muted-foreground">
-                              {' '}
-                              (Correct: <strong>{answer.question.answer}</strong>)
-                            </span>
-                          )}
+                          <span className="text-muted-foreground">
+                            {' '}
+                            (Correct: <strong>{answer.question.answer}</strong>)
+                          </span>
                         </p>
-                        {!answer.isCorrect && (
-                          <p className="text-muted-foreground">
-                            {answer.question.justification}
+                        <p className="text-muted-foreground">
+                          {answer.question.justification}
+                        </p>
+                        {answer.question.source && (
+                          <p className="text-xs text-muted-foreground">
+                            Source: {answer.question.source}
                           </p>
                         )}
                       </div>
