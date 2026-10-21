@@ -7,7 +7,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/react-label';
 import { Progress } from '@/components/ui/progress';
-import { Clock, CheckCircle2, XCircle, ChevronRight, AlertTriangle } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { Clock, CheckCircle2, XCircle, ChevronRight, AlertTriangle, Flag } from 'lucide-react';
 
 interface Question {
   id: string;
@@ -52,6 +63,7 @@ export default function ExamPage({
   const currentQuestion = questions[currentIndex];
   const correctCount = Object.values(answers).filter((a) => a.correct).length;
   const progress = ((currentIndex + 1) / questions.length) * 100;
+  const unansweredCount = questions.length - Object.keys(answers).length;
 
   useEffect(() => {
     async function loadSession() {
@@ -153,6 +165,18 @@ export default function ExamPage({
     router.push(`/results/${id}`);
   };
 
+  const handleFinishEarly = async () => {
+    await fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        completedAt: new Date().toISOString(),
+      }),
+    });
+
+    router.push(`/results/${id}`);
+  };
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -182,14 +206,45 @@ export default function ExamPage({
               Score: {correctCount}/{Object.keys(answers).length}
             </div>
           </div>
-          {isTimedExam && timeRemaining !== null && (
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Clock className="h-4 w-4" />
-              <span className={timeRemaining < 600 ? 'text-destructive' : ''}>
-                {formatTime(timeRemaining)}
-              </span>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {isTimedExam && timeRemaining !== null && (
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <Clock className="h-4 w-4" />
+                <span className={timeRemaining < 600 ? 'text-destructive' : ''}>
+                  {formatTime(timeRemaining)}
+                </span>
+              </div>
+            )}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Flag className="h-4 w-4 mr-2" />
+                  Finish Now
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Finish Exam Early?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {unansweredCount > 0 ? (
+                      <>
+                        You have <strong>{unansweredCount}</strong> unanswered question{unansweredCount !== 1 ? 's' : ''}.
+                        Unanswered questions will be scored as incorrect.
+                      </>
+                    ) : (
+                      'You have answered all questions. Are you ready to see your results?'
+                    )}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Continue Exam</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleFinishEarly}>
+                    Finish Now
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </header>
 
