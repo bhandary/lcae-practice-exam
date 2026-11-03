@@ -4,6 +4,17 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { ArrowLeft, Calendar, Clock, Target, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -46,10 +57,6 @@ export default function HistoryPage() {
   };
 
   const handleClearHistory = async () => {
-    if (!confirm('Are you sure you want to clear all history? This cannot be undone.')) {
-      return;
-    }
-
     try {
       await fetch('/api/history', { method: 'DELETE' });
       setSessions([]);
@@ -82,10 +89,28 @@ export default function HistoryPage() {
             </Button>
           </Link>
           {sessions.length > 0 && (
-            <Button variant="destructive" size="sm" onClick={handleClearHistory}>
-              <Trash2 className="h-4 w-4 mr-2" />
-              Clear History
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Clear History
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Clear All History?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete all your session history and cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleClearHistory}>
+                    Delete All
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )}
         </div>
       </header>
