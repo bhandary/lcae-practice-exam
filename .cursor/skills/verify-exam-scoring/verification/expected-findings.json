@@ -1,0 +1,14 @@
+{
+  "syncCommit": "bbdc5c7c078b2704475a7a2b8e72d2ca68e6be64",
+  "seed": 20261103,
+  "numRuns": 25,
+  "findings": [
+    "F-QUESTIONCOUNT",
+    "F-NO-ANSWER-AFTER-FINISH",
+    "F-NO-ANSWER-AFTER-EXPIRY",
+    "F-NO-CONCURRENT-DOUBLE",
+    "F-ASSIGNED-SET",
+    "F-SCORE-BOUNDED",
+    "F-DOMAIN-REVIEW"
+  ]
+}
