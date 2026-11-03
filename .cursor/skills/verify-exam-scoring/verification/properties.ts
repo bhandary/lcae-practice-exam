@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { BANK } from './bank';
+import { BANK, questionById } from './bank';
 import {
   assignedQuestionIds,
   onlySession,
@@ -77,6 +77,26 @@ function result(
   };
 }
 
+function pinnedIds(): string[] {
+  const ids = assignedQuestionIds({}, onlySession());
+  if (ids.length === 0 || new Set(ids).size !== ids.length) {
+    fail(
+      `modeling gap: assignedQuestionIds found [${ids.join(', ')}] on the stored session. POST app/api/sessions/route.ts should persist questionIds.`
+    );
+  }
+  return ids;
+}
+
+function questionFromPin(index: number) {
+  const ids = pinnedIds();
+  const id = ids[index % ids.length];
+  const question = questionById(id);
+  if (!question) {
+    fail(`modeling gap: pinned id ${id} is not in the verification bank`);
+  }
+  return question;
+}
+
 async function openPractice(questionCount: number): Promise<string> {
   const created = await postSession({
     mode: 'practice',
@@ -87,6 +107,12 @@ async function openPractice(questionCount: number): Promise<string> {
   if (created.status !== 200 || typeof created.json.id !== 'string') {
     fail(
       `POST app/api/sessions/route.ts status ${created.status} for practice questionCount ${questionCount}: ${JSON.stringify(created.json)}`
+    );
+  }
+  const pinned = assignedQuestionIds(created.json, storedSessions()[0]);
+  if (pinned.length !== questionCount || new Set(pinned).size !== pinned.length) {
+    fail(
+      `modeling gap: practice questionCount ${questionCount} pinned [${pinned.join(', ')}]. The session must pin that many distinct question ids.`
     );
   }
   return created.json.id;
@@ -103,6 +129,16 @@ async function openTimed(): Promise<string> {
     fail(
       `POST app/api/sessions/route.ts status ${created.status} for timed-exam questionCount 40: ${JSON.stringify(created.json)}`
     );
+  }
+  const pinned = assignedQuestionIds(created.json, storedSessions()[0]);
+  const pinnedSet = new Set(pinned);
+  if (pinned.length !== 40 || pinnedSet.size !== 40) {
+    fail(`modeling gap: timed session pinned ${pinned.length} ids, expected 40 distinct.`);
+  }
+  for (const question of BANK) {
+    if (!pinnedSet.has(question.id)) {
+      fail(`modeling gap: timed session did not pin ${question.id}`);
+    }
   }
   return created.json.id;
 }
@@ -132,13 +168,13 @@ async function answerLetter(
 export async function hIsCorrect(): Promise<PropertyResult> {
   const checked = await checkFast(
     fc.asyncProperty(
-      fc.integer({ min: 0, max: BANK.length - 1 }),
+      fc.integer({ min: 0, max: 9 }),
       fc.constantFrom(...LETTERS),
       fc.boolean(),
       async (index, selected, clientIsCorrect) => {
         resetMem();
-        const question = BANK[index];
         const sessionId = await openPractice(10);
+        const question = questionFromPin(index);
         const answered = await answerLetter(sessionId, question.id, selected, {
           isCorrect: clientIsCorrect,
         });
@@ -160,18 +196,20 @@ export async function hCorrectCount(): Promise<PropertyResult> {
     fc.asyncProperty(
       fc.integer({ min: 1, max: 8 }).chain((count) =>
         fc.tuple(
-          fc.shuffledSubarray(
-            Array.from({ length: BANK.length }, (_, index) => index),
-            { minLength: count, maxLength: count }
-          ),
+          fc.constant(count),
           fc.array(fc.constantFrom(...LETTERS), { minLength: count, maxLength: count })
         )
       ),
-      async ([indexes, letters]) => {
+      async ([count, letters]) => {
         resetMem();
         const sessionId = await openPractice(10);
-        for (let i = 0; i < indexes.length; i += 1) {
-          const question = BANK[indexes[i]];
+        const ids = pinnedIds();
+        if (ids.length < count) {
+          fail(`modeling gap: practice session pinned ${ids.length} ids, needed ${count}`);
+        }
+        for (let i = 0; i < count; i += 1) {
+          const question = questionById(ids[i]);
+          if (!question) fail(`modeling gap: pinned id ${ids[i]} is not in the verification bank`);
           const answered = await answerLetter(sessionId, question.id, letters[i]);
           if (answered.status !== 200) {
             fail(
@@ -196,13 +234,13 @@ export async function hCorrectCount(): Promise<PropertyResult> {
 export async function hNoDoubleSequential(): Promise<PropertyResult> {
   const checked = await checkFast(
     fc.asyncProperty(
-      fc.integer({ min: 0, max: BANK.length - 1 }),
+      fc.integer({ min: 0, max: 9 }),
       fc.constantFrom(...LETTERS),
       fc.constantFrom(...LETTERS),
       async (index, first, second) => {
         resetMem();
-        const question = BANK[index];
         const sessionId = await openPractice(10);
+        const question = questionFromPin(index);
         const firstResponse = await answerLetter(sessionId, question.id, first);
         const secondResponse = await answerLetter(sessionId, question.id, second);
         const rows = storedAnswers().filter((answer) => answer.questionId === question.id);
@@ -225,7 +263,7 @@ export async function hNoDoubleSequential(): Promise<PropertyResult> {
 export async function hOwner(): Promise<PropertyResult> {
   resetMem();
   const sessionId = await openPractice(10);
-  const question = BANK[0];
+  const question = questionFromPin(0);
   setCurrentUserId('user-2');
   const answered = await answerLetter(sessionId, question.id, question.answer);
   const patched = await finish(sessionId);
@@ -263,15 +301,22 @@ export async function hOverallScore(): Promise<PropertyResult> {
         const wrongCount = Math.min(wrong, 6);
         const correctCount = Math.min(correct, 6);
         const sessionId = await openPractice(questionCount);
-        for (let i = 0; i < correctCount; i += 1) {
-          const question = BANK[i];
+        const ids = pinnedIds();
+        const correctN = Math.min(correctCount, ids.length);
+        const wrongN = Math.min(wrongCount, Math.max(0, ids.length - correctN));
+        for (let i = 0; i < correctN; i += 1) {
+          const question = questionById(ids[i]);
+          if (!question) fail(`modeling gap: pinned id ${ids[i]} is not in the verification bank`);
           const answered = await answerLetter(sessionId, question.id, question.answer);
           if (answered.status !== 200) {
             fail(`setup answer ${question.id} HTTP ${answered.status}`);
           }
         }
-        for (let i = 0; i < wrongCount; i += 1) {
-          const question = BANK[10 + i];
+        for (let i = 0; i < wrongN; i += 1) {
+          const question = questionById(ids[correctN + i]);
+          if (!question) {
+            fail(`modeling gap: pinned id ${ids[correctN + i]} is not in the verification bank`);
+          }
           const wrongLetter = LETTERS.find((letter) => letter !== question.answer) ?? 'A';
           const answered = await answerLetter(sessionId, question.id, wrongLetter);
           if (answered.status !== 200) {
@@ -286,20 +331,59 @@ export async function hOverallScore(): Promise<PropertyResult> {
         const percentNode = headlinePercentage(text);
         const expectedPercent = `${Math.round((storedCorrect / questionCount) * 100)}%`;
         if (
-          storedCorrect !== correctCount ||
+          storedCorrect !== correctN ||
           !shown ||
           shown.correct !== storedCorrect ||
           shown.total !== questionCount ||
           percentNode !== expectedPercent
         ) {
           fail(
-            `ResultsPage showed "${shown?.correct} correct out of ${shown?.total}" and ${percentNode} for practice questionCount ${questionCount} with ${correctCount} correct UserAnswer rows and ${wrongCount} incorrect ones (${questionCount - correctCount - wrongCount} unanswered). Store correctCount=${storedCorrect}. Expected ${storedCorrect} correct out of ${questionCount} and ${expectedPercent}. Unanswered questions stay in the denominator.`
+            `ResultsPage showed "${shown?.correct} correct out of ${shown?.total}" and ${percentNode} for practice questionCount ${questionCount} with ${correctN} correct UserAnswer rows and ${wrongN} incorrect ones (${questionCount - correctN - wrongN} unanswered). Store correctCount=${storedCorrect}. Expected ${storedCorrect} correct out of ${questionCount} and ${expectedPercent}. Unanswered questions stay in the denominator.`
           );
         }
       }
     )
   );
   return result('H-OVERALL-SCORE', 'held', checked);
+}
+
+export async function hFinishIdempotent(): Promise<PropertyResult> {
+  resetMem();
+  const sessionId = await openPractice(10);
+  const question = questionFromPin(0);
+  const answered = await answerLetter(sessionId, question.id, question.answer);
+  if (answered.status !== 200) {
+    return result('H-FINISH-IDEMPOTENT', 'held', {
+      ok: false,
+      detail: `setup answer ${question.id} HTTP ${answered.status}`,
+    });
+  }
+  const clientStamp = '1999-01-01T00:00:00.000Z';
+  const before = Date.now();
+  const first = await patchSession(sessionId, { completedAt: clientStamp, correctCount: 999 });
+  const after = Date.now();
+  const stored = onlySession();
+  const completedMs = new Date(stored.completedAt as Date | string).getTime();
+  const second = await patchSession(sessionId, {
+    completedAt: new Date(0).toISOString(),
+    correctCount: 0,
+  });
+  const again = onlySession();
+  const againMs = new Date(again.completedAt as Date | string).getTime();
+  const ok =
+    first.status === 200 &&
+    second.status === 200 &&
+    stored.correctCount === 1 &&
+    again.correctCount === 1 &&
+    againMs === completedMs &&
+    completedMs !== Date.parse(clientStamp) &&
+    completedMs >= before &&
+    completedMs <= after + 2000;
+  if (ok) return result('H-FINISH-IDEMPOTENT', 'held', { ok: true });
+  return result('H-FINISH-IDEMPOTENT', 'held', {
+    ok: false,
+    detail: `PATCH app/api/sessions/[id]/route.ts first HTTP ${first.status} stored correctCount ${stored.correctCount} completedAt ${String(stored.completedAt)} (client sent ${clientStamp}). Second PATCH HTTP ${second.status} stored correctCount ${again.correctCount} completedAt ${String(again.completedAt)}. A second finish must keep both fields, and completedAt must be the server clock.`,
+  });
 }
 
 async function explicitOverallCases(): Promise<{ ok: true } | { ok: false; detail: string }> {
@@ -368,7 +452,7 @@ async function explicitOverallCases(): Promise<{ ok: true } | { ok: false; detai
 
 export async function fQuestionCount(): Promise<PropertyResult> {
   const canonical = await canonicalQuestionCount();
-  if (!canonical.ok) return result('F-QUESTIONCOUNT', 'spec', canonical);
+  if (!canonical.ok) return result('F-QUESTIONCOUNT', 'held', canonical);
   const checked = await checkFast(
     fc.asyncProperty(
       fc.constantFrom('timed-exam', 'practice'),
@@ -379,36 +463,44 @@ export async function fQuestionCount(): Promise<PropertyResult> {
           mode,
           domain: null,
           questionCount,
-          timeLimit: mode === 'timed-exam' ? 7200 : null,
+          timeLimit: mode === 'timed-exam' ? 60 : null,
         });
-        const legal =
-          mode === 'timed-exam' ? questionCount === 40 : PRACTICE_COUNTS.includes(questionCount as 10 | 20 | 40);
         const stored = storedSessions()[0];
-        if (legal) {
-          if (created.status >= 400 || !stored || stored.questionCount !== questionCount) {
+        const pinned = assignedQuestionIds(created.json, stored);
+        if (mode === 'timed-exam') {
+          if (
+            created.status >= 400 ||
+            !stored ||
+            stored.questionCount !== 40 ||
+            stored.timeLimit !== 7200 ||
+            pinned.length !== 40 ||
+            new Set(pinned).size !== 40
+          ) {
             fail(
-              `Legal ${mode} questionCount ${questionCount} was not stored. HTTP ${created.status} stored ${String(stored?.questionCount)}.`
+              `POST app/api/sessions/route.ts stored mode=timed-exam questionCount=${String(stored?.questionCount)} timeLimit=${String(stored?.timeLimit)} pinned=${pinned.length} from client questionCount=${questionCount} timeLimit=60. HTTP ${created.status}. A timed exam must persist questionCount 40 and timeLimit 7200 (120 minutes).`
             );
           }
           return;
         }
-        const keptIllegal = stored?.questionCount === questionCount && created.status < 400;
-        const coerced =
-          created.status < 400 &&
-          stored &&
-          (mode === 'timed-exam'
-            ? stored.questionCount === 40
-            : PRACTICE_COUNTS.includes(stored.questionCount as 10 | 20 | 40));
-        const rejected = created.status >= 400 && !stored;
-        if (keptIllegal || (!coerced && !rejected)) {
+        const expected = Math.min(BANK.length, Math.max(1, questionCount));
+        const legal = PRACTICE_COUNTS.includes(questionCount as 10 | 20 | 40);
+        if (
+          created.status >= 400 ||
+          !stored ||
+          stored.questionCount !== expected ||
+          (legal && stored.questionCount !== questionCount) ||
+          stored.timeLimit !== null ||
+          pinned.length !== expected ||
+          new Set(pinned).size !== pinned.length
+        ) {
           fail(
-            `POST app/api/sessions/route.ts stored mode=${mode} questionCount=${String(stored?.questionCount)} from client questionCount=${questionCount}. HTTP ${created.status}. Timed sessions must persist 40 and practice sessions must persist 10, 20, or 40; reject or coerce anything else.`
+            `POST app/api/sessions/route.ts stored mode=practice questionCount=${String(stored?.questionCount)} timeLimit=${String(stored?.timeLimit)} pinned=${pinned.length} from client questionCount=${questionCount}. HTTP ${created.status}. Practice questionCount must clamp to 1..${BANK.length}; 10, 20, and 40 must be stored as sent.`
           );
         }
       }
     )
   );
-  return result('F-QUESTIONCOUNT', 'spec', checked);
+  return result('F-QUESTIONCOUNT', 'held', checked);
 }
 
 async function canonicalQuestionCount(): Promise<{ ok: true } | { ok: false; detail: string }> {
@@ -421,38 +513,68 @@ async function canonicalQuestionCount(): Promise<{ ok: true } | { ok: false; det
       timeLimit: 7200,
     });
     const stored = storedSessions()[0];
-    const acceptedIllegal = created.status < 400 && stored?.questionCount === 1;
-    if (!acceptedIllegal) return { ok: true };
-    const question = BANK[0];
+    if (created.status >= 400 || !stored || stored.questionCount !== 40 || stored.timeLimit !== 7200) {
+      fail(
+        `POST /api/sessions { mode: "timed-exam", questionCount: 1, timeLimit: 7200 } returned HTTP ${created.status} and stored questionCount ${String(stored?.questionCount)} timeLimit ${String(stored?.timeLimit)}. A timed exam is 40 questions and 120 minutes.`
+      );
+    }
     const sessionId = String(created.json.id);
+    const question = questionFromPin(0);
     await answerLetter(sessionId, question.id, question.answer);
     await finish(sessionId);
     const text = await renderResultsText(sessionId);
-    fail(
-      `POST /api/sessions { mode: "timed-exam", questionCount: 1, timeLimit: 7200 } returned HTTP ${created.status} and stored questionCount ${stored.questionCount}. One correct POST /api/answers for ${question.id}, then PATCH finish, made ResultsPage show ${headlinePercentage(text)} and "${headline(text)?.correct} correct out of ${headline(text)?.total}". Pass copy present=${text.includes('You passed the exam!')}. A timed exam is 40 questions; 70% of 1 is not 70% of 40.`
-    );
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('POST /api/sessions')) {
-      return { ok: false, detail: error.message };
+    const shown = headline(text);
+    if (!shown || shown.total !== 40 || shown.correct !== 1 || headlinePercentage(text) === '100%') {
+      fail(
+        `POST /api/sessions { mode: "timed-exam", questionCount: 1, timeLimit: 7200 } stored questionCount ${stored.questionCount}. One correct answer then PATCH made ResultsPage show ${headlinePercentage(text)} and "${shown?.correct} correct out of ${shown?.total}". Passing 1 of 1 is not 70% of 40.`
+      );
     }
+    resetMem();
+    const unknownMode = await postSession({
+      mode: 'speedrun',
+      domain: null,
+      questionCount: 10,
+      timeLimit: null,
+    });
+    if (unknownMode.status < 400 || storedSessions().length !== 0) {
+      fail(
+        `POST /api/sessions { mode: "speedrun" } returned HTTP ${unknownMode.status} and stored ${storedSessions().length} session(s). Unknown modes must be rejected.`
+      );
+    }
+    resetMem();
+    const unknownDomain = await postSession({
+      mode: 'practice',
+      domain: 'Security',
+      questionCount: 10,
+      timeLimit: null,
+    });
+    if (unknownDomain.status < 400 || storedSessions().length !== 0) {
+      fail(
+        `POST /api/sessions { mode: "practice", domain: "Security" } returned HTTP ${unknownDomain.status} and stored ${storedSessions().length} session(s). Unknown domains must be rejected.`
+      );
+    }
+    return { ok: true };
+  } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
 export async function fNoAnswerAfterFinish(): Promise<PropertyResult> {
   const canonical = await canonicalAnswerAfterFinish();
-  if (!canonical.ok) return result('F-NO-ANSWER-AFTER-FINISH', 'spec', canonical);
+  if (!canonical.ok) return result('F-NO-ANSWER-AFTER-FINISH', 'held', canonical);
   const checked = await checkFast(
     fc.asyncProperty(fc.boolean(), async (closeFirst) => {
       resetMem();
       const sessionId = await openPractice(10);
-      const first = await answerLetter(sessionId, BANK[0].id, BANK[0].answer);
+      const firstQuestion = questionFromPin(0);
+      const secondQuestion = questionFromPin(1);
+      const first = await answerLetter(sessionId, firstQuestion.id, firstQuestion.answer);
       if (first.status !== 200) fail(`first answer HTTP ${first.status}`);
       if (closeFirst) {
         const patched = await finish(sessionId);
         if (patched.status !== 200) fail(`PATCH HTTP ${patched.status}`);
       }
-      const second = await answerLetter(sessionId, BANK[1].id, BANK[1].answer);
+      const second = await answerLetter(sessionId, secondQuestion.id, secondQuestion.answer);
       const rows = storedAnswers().length;
       if (!closeFirst) {
         if (second.status !== 200 || rows !== 2) {
@@ -464,26 +586,28 @@ export async function fNoAnswerAfterFinish(): Promise<PropertyResult> {
       }
       if (second.status < 400 || rows !== 1) {
         fail(
-          `After PATCH set completedAt, POST app/api/answers/route.ts for ${BANK[1].id} returned HTTP ${second.status} and the session has ${rows} UserAnswer rows. An answer after finish must be rejected and must not change the stored score.`
+          `After PATCH set completedAt, POST app/api/answers/route.ts for ${secondQuestion.id} returned HTTP ${second.status} and the session has ${rows} UserAnswer rows. An answer after finish must be rejected and must not change the stored score.`
         );
       }
     })
   );
-  return result('F-NO-ANSWER-AFTER-FINISH', 'spec', checked);
+  return result('F-NO-ANSWER-AFTER-FINISH', 'held', checked);
 }
 
 async function canonicalAnswerAfterFinish(): Promise<{ ok: true } | { ok: false; detail: string }> {
   try {
     resetMem();
     const sessionId = await openPractice(10);
-    const first = await answerLetter(sessionId, BANK[0].id, BANK[0].answer);
+    const firstQuestion = questionFromPin(0);
+    const secondQuestion = questionFromPin(1);
+    const first = await answerLetter(sessionId, firstQuestion.id, firstQuestion.answer);
     const closed = await finish(sessionId);
     const correctAfterClose = onlySession().correctCount;
-    const second = await answerLetter(sessionId, BANK[1].id, BANK[1].answer);
+    const second = await answerLetter(sessionId, secondQuestion.id, secondQuestion.answer);
     if (second.status >= 400 && storedAnswers().length === 1) return { ok: true };
     const reopened = await finish(sessionId);
     fail(
-      `Practice session ${sessionId}: POST /api/answers ${BANK[0].id} HTTP ${first.status}, PATCH finish HTTP ${closed.status} stored correctCount ${correctAfterClose} (body correctCount 999 ignored). Then POST /api/answers ${BANK[1].id} HTTP ${second.status}. A second PATCH HTTP ${reopened.status} stored correctCount ${onlySession().correctCount}. Rows=${storedAnswers().length}. Finish now must close answering; the later answer was scored.`
+      `Practice session ${sessionId}: POST /api/answers ${firstQuestion.id} HTTP ${first.status}, PATCH finish HTTP ${closed.status} stored correctCount ${correctAfterClose} (body correctCount 999 ignored). Then POST /api/answers ${secondQuestion.id} HTTP ${second.status}. A second PATCH HTTP ${reopened.status} stored correctCount ${onlySession().correctCount}. Rows=${storedAnswers().length}. Finish now must close answering; the later answer was scored.`
     );
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Practice session')) {
@@ -495,13 +619,13 @@ async function canonicalAnswerAfterFinish(): Promise<{ ok: true } | { ok: false;
 
 export async function fNoAnswerAfterExpiry(): Promise<PropertyResult> {
   const canonical = await canonicalExpiry();
-  if (!canonical.ok) return result('F-NO-ANSWER-AFTER-EXPIRY', 'spec', canonical);
+  if (!canonical.ok) return result('F-NO-ANSWER-AFTER-EXPIRY', 'held', canonical);
   const checked = await checkFast(
     fc.asyncProperty(fc.boolean(), fc.boolean(), async (timed, expired) => {
       resetMem();
       const sessionId = timed ? await openTimed() : await openPractice(10);
       if (expired) backdateSession(sessionId, timed ? 7201 : 86400);
-      const question = BANK[0];
+      const question = questionFromPin(0);
       const answered = await answerLetter(sessionId, question.id, question.answer);
       const rows = storedAnswers().length;
       if (!timed || !expired) {
@@ -519,7 +643,7 @@ export async function fNoAnswerAfterExpiry(): Promise<PropertyResult> {
       }
     })
   );
-  return result('F-NO-ANSWER-AFTER-EXPIRY', 'spec', checked);
+  return result('F-NO-ANSWER-AFTER-EXPIRY', 'held', checked);
 }
 
 async function canonicalExpiry(): Promise<{ ok: true } | { ok: false; detail: string }> {
@@ -527,7 +651,7 @@ async function canonicalExpiry(): Promise<{ ok: true } | { ok: false; detail: st
     resetMem();
     const sessionId = await openTimed();
     backdateSession(sessionId, 7201);
-    const question = BANK[0];
+    const question = questionFromPin(0);
     const answered = await answerLetter(sessionId, question.id, question.answer);
     if (answered.status >= 400 && storedAnswers().length === 0) return { ok: true };
     const patched = await finish(sessionId);
@@ -546,7 +670,7 @@ export async function fNoConcurrentDouble(): Promise<PropertyResult> {
   try {
     resetMem();
     const sessionId = await openPractice(10);
-    const question = BANK[0];
+    const question = questionFromPin(0);
     let arrived = 0;
     let openBarrier: () => void = () => {};
     const opened = new Promise<void>((resolve) => {
@@ -580,15 +704,15 @@ export async function fNoConcurrentDouble(): Promise<PropertyResult> {
     const rows = storedAnswers().filter((answer) => answer.questionId === question.id);
     const successes = [first.status, second.status].filter((status) => status === 200).length;
     if (rows.length === 1 && successes <= 1) {
-      return result('F-NO-CONCURRENT-DOUBLE', 'spec', { ok: true });
+      return result('F-NO-CONCURRENT-DOUBLE', 'held', { ok: true });
     }
-    return result('F-NO-CONCURRENT-DOUBLE', 'spec', {
+    return result('F-NO-CONCURRENT-DOUBLE', 'held', {
       ok: false,
       detail: `Two overlapping POST /api/answers for ${question.id} on session ${sessionId} both passed findFirst before either create. Statuses ${first.status} and ${second.status}. Stored UserAnswer rows for that question: ${rows.length}. userAnswerPairIsUnique()=${String(userAnswerPairIsUnique())} (prisma/schema.prisma model UserAnswer has no @@unique([userSessionId, questionId])). Both rows are isCorrect=${String(rows.every((row) => row.isCorrect))}, so a later PATCH count would add ${rows.filter((row) => row.isCorrect).length} to correctCount for one question.`,
     });
   } catch (error) {
     setFindFirstHook(null);
-    return result('F-NO-CONCURRENT-DOUBLE', 'spec', {
+    return result('F-NO-CONCURRENT-DOUBLE', 'held', {
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
     });
@@ -616,82 +740,94 @@ export async function fAssignedSet(): Promise<PropertyResult> {
     const pinnedOk = pinned.length === 10 && new Set(pinned).size === 10;
     const outsiderRejected = answered.status >= 400 && !storedAnswers().some((row) => row.questionId === outsider.id);
     if (pinnedOk && outsiderRejected) {
-      return result('F-ASSIGNED-SET', 'spec', { ok: true });
+      return result('F-ASSIGNED-SET', 'held', { ok: true });
     }
-    return result('F-ASSIGNED-SET', 'spec', {
+    return result('F-ASSIGNED-SET', 'held', {
       ok: false,
       detail: `POST /api/sessions { mode: "practice", questionCount: 10 } HTTP ${created.status} response keys [${Object.keys(created.json).join(', ')}] pinned ${pinned.length} question ids. POST /api/answers questionId ${outsider.id} (a bank question${pinned.includes(outsider.id) ? ' in that list' : ' not in that list'}) returned HTTP ${answered.status} and stored ${storedAnswers().length} row(s). The session does not record the questions that count, so the client chooses the numerator.`,
     });
   } catch (error) {
-    return result('F-ASSIGNED-SET', 'spec', {
+    return result('F-ASSIGNED-SET', 'held', {
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
+async function scoreWithinQuestionCount(extraAttempts: number): Promise<void> {
+  const sessionId = await openPractice(10);
+  const ids = pinnedIds();
+  for (const id of ids) {
+    const question = questionById(id);
+    if (!question) fail(`modeling gap: pinned id ${id} is not in the verification bank`);
+    const answered = await answerLetter(sessionId, id, question.answer);
+    if (answered.status !== 200) {
+      fail(`pinned answer ${id} HTTP ${answered.status} ${JSON.stringify(answered.json)}`);
+    }
+  }
+  const outsiders = BANK.filter((question) => !ids.includes(question.id)).slice(0, extraAttempts);
+  if (outsiders.length < 1) fail('modeling gap: the bank has no question outside the pinned set');
+  for (const question of outsiders) {
+    const answered = await answerLetter(sessionId, question.id, question.answer);
+    const storedExtra = storedAnswers().some((row) => row.questionId === question.id);
+    if (answered.status < 400 || storedExtra) {
+      fail(
+        `POST /api/sessions practice questionCount 10 accepted ${question.id} outside the pinned set (HTTP ${answered.status}). An answer the session did not pin must be rejected so correctCount cannot exceed questionCount.`
+      );
+    }
+  }
+  const patched = await finish(sessionId);
+  const text = await renderResultsText(sessionId);
+  const shown = headline(text);
+  const stored = onlySession().correctCount;
+  const percentText = headlinePercentage(text);
+  const percent = percentText ? Number.parseInt(percentText, 10) : Number.NaN;
+  if (
+    patched.status !== 200 ||
+    stored > 10 ||
+    !shown ||
+    shown.correct > shown.total ||
+    percent > 100
+  ) {
+    fail(
+      `POST /api/sessions practice questionCount 10, ${ids.length} pinned correct answers and ${outsiders.length} rejected outsiders. PATCH stored correctCount ${stored}. ResultsPage showed ${percentText} and "${shown?.correct} correct out of ${shown?.total}". correctCount and the headline must stay within questionCount.`
+    );
+  }
+}
+
 export async function fScoreBounded(): Promise<PropertyResult> {
   const canonical = await canonicalScoreBound();
-  if (!canonical.ok) return result('F-SCORE-BOUNDED', 'spec', canonical);
+  if (!canonical.ok) return result('F-SCORE-BOUNDED', 'held', canonical);
   const checked = await checkFast(
     fc.asyncProperty(fc.integer({ min: 11, max: 16 }), async (answers) => {
       resetMem();
-      const sessionId = await openPractice(10);
-      for (let i = 0; i < answers; i += 1) {
-        const question = BANK[i];
-        const answered = await answerLetter(sessionId, question.id, question.answer);
-        if (answered.status !== 200) {
-          fail(`answer ${i + 1} ${question.id} HTTP ${answered.status}`);
-        }
-      }
-      const patched = await finish(sessionId);
-      const text = await renderResultsText(sessionId);
-      const shown = headline(text);
-      const stored = onlySession().correctCount;
-      if (patched.status !== 200 || stored > 10 || (shown && shown.correct > shown.total)) {
-        fail(
-          `Practice questionCount 10 accepted ${answers} correct answers. PATCH stored correctCount ${stored}. ResultsPage showed "${shown?.correct} correct out of ${shown?.total}" ${headlinePercentage(text)}.`
-        );
-      }
+      await scoreWithinQuestionCount(answers - 10);
     })
   );
-  return result('F-SCORE-BOUNDED', 'spec', checked);
+  return result('F-SCORE-BOUNDED', 'held', checked);
 }
 
 async function canonicalScoreBound(): Promise<{ ok: true } | { ok: false; detail: string }> {
   try {
     resetMem();
-    const sessionId = await openPractice(10);
-    for (let i = 0; i < 11; i += 1) {
-      const question = BANK[i];
-      const answered = await answerLetter(sessionId, question.id, question.answer);
-      if (answered.status !== 200) fail(`answer ${question.id} HTTP ${answered.status} ${JSON.stringify(answered.json)}`);
-    }
-    await finish(sessionId);
-    const text = await renderResultsText(sessionId);
-    const shown = headline(text);
-    const stored = onlySession().correctCount;
-    if (stored <= 10 && shown && shown.correct <= shown.total) return { ok: true };
-    fail(
-      `POST /api/sessions practice questionCount 10, then 11 correct POST /api/answers (${BANK.slice(0, 11).map((question) => question.id).join(', ')}). PATCH app/api/sessions/[id]/route.ts counted correctCount ${stored}. ResultsPage showed ${headlinePercentage(text)} and "${shown?.correct} correct out of ${shown?.total}". correctCount is not capped by questionCount.`
-    );
+    await scoreWithinQuestionCount(1);
+    return { ok: true };
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('POST /api/sessions practice')) {
-      return { ok: false, detail: error.message };
-    }
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
 export async function fDomainReview(): Promise<PropertyResult> {
   const canonical = await canonicalDomainReview();
-  if (!canonical.ok) return result('F-DOMAIN-REVIEW', 'spec', canonical);
+  if (!canonical.ok) return result('F-DOMAIN-REVIEW', 'held', canonical);
   const checked = await checkFast(
     fc.asyncProperty(fc.integer({ min: 0, max: 9 }), async (answeredCount) => {
       resetMem();
       const sessionId = await openPractice(10);
+      const ids = pinnedIds();
       for (let i = 0; i < answeredCount; i += 1) {
-        const question = BANK[i];
+        const question = questionById(ids[i]);
+        if (!question) fail(`modeling gap: pinned id ${ids[i]} is not in the verification bank`);
         const answered = await answerLetter(sessionId, question.id, question.answer);
         if (answered.status !== 200) fail(`answer ${question.id} HTTP ${answered.status}`);
       }
@@ -706,28 +842,27 @@ export async function fDomainReview(): Promise<PropertyResult> {
       }
     })
   );
-  return result('F-DOMAIN-REVIEW', 'spec', checked);
+  return result('F-DOMAIN-REVIEW', 'held', checked);
 }
 
 async function canonicalDomainReview(): Promise<{ ok: true } | { ok: false; detail: string }> {
   try {
     resetMem();
     const sessionId = await openPractice(10);
-    const question = BANK[0];
+    const question = questionFromPin(0);
     await answerLetter(sessionId, question.id, question.answer);
     await finish(sessionId);
     const text = await renderResultsText(sessionId);
     const domains = domainTotalSum(text);
     const reviews = reviewCount(text);
     const shown = headline(text);
-    if (domains === 10 && reviews === 10) return { ok: true };
+    if (domains === 10 && reviews === 10 && shown?.correct === 1 && shown.total === 10) {
+      return { ok: true };
+    }
     fail(
-      `Finish now: practice questionCount 10, one correct answer ${question.id} (${question.domain}), nine unanswered. ResultsPage headline "${shown?.correct} correct out of ${shown?.total}" ${headlinePercentage(text)} (the ratio counts the nine as wrong). Domain totals sum to ${domains} (the only row is ${question.domain}). Review lists ${reviews} question(s). Per-domain totals and the per-question review only include answered questions, so they do not sum to questionCount.`
+      `Finish now: practice questionCount 10, one correct answer ${question.id} (${question.domain}), nine unanswered. ResultsPage headline "${shown?.correct} correct out of ${shown?.total}" ${headlinePercentage(text)} (the ratio counts the nine as wrong). Domain totals sum to ${domains}. Review lists ${reviews} question(s). Per-domain totals and the per-question review must include unanswered questions so they sum to questionCount.`
     );
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Finish now:')) {
-      return { ok: false, detail: error.message };
-    }
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
@@ -739,6 +874,7 @@ export async function runAllProperties(): Promise<PropertyResult[]> {
     hNoDoubleSequential,
     hOwner,
     hOverallScore,
+    hFinishIdempotent,
     fQuestionCount,
     fNoAnswerAfterFinish,
     fNoAnswerAfterExpiry,

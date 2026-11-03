@@ -1,6 +1,22 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { capCorrectCount, questionIdList } from '@/lib/session-rules';
+
+type QuestionRecord = {
+  id: string;
+  answer?: string;
+  justification?: string;
+  [key: string]: unknown;
+};
+
+function presentQuestion(question: QuestionRecord | null, reveal: boolean) {
+  if (!question || reveal) return question;
+  const hidden: QuestionRecord = { ...question };
+  delete hidden.answer;
+  delete hidden.justification;
+  return hidden;
+}
 
 export async function GET(
   request: Request,
@@ -29,7 +45,28 @@ export async function GET(
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    return NextResponse.json(userSession);
+    const questionIds = questionIdList(userSession.questionIds);
+    const reveal = Boolean(userSession.completedAt);
+    let questions: QuestionRecord[] = [];
+    if (questionIds.length > 0) {
+      const rows = await prisma.question.findMany({
+        where: { id: { in: questionIds } },
+      });
+      const byId = new Map(rows.map((question) => [question.id, question as QuestionRecord]));
+      questions = questionIds.flatMap((questionId) => {
+        const question = byId.get(questionId);
+        return question ? [presentQuestion(question, reveal) as QuestionRecord] : [];
+      });
+    }
+
+    return NextResponse.json({
+      ...userSession,
+      answers: userSession.answers.map((answer) => ({
+        ...answer,
+        question: presentQuestion(answer.question as QuestionRecord | null, reveal),
+      })),
+      questions,
+    });
   } catch (error) {
     console.error('Error fetching session:', error);
     return NextResponse.json(
@@ -50,10 +87,9 @@ export async function PATCH(
     }
 
     const { id } = await context.params;
-    const body = await request.json();
-    const { completedAt } = body;
+    // The body is intentionally unused. correctCount and completedAt are server-owned.
+    await request.json();
 
-    // Verify the session belongs to this user
     const existingSession = await prisma.userSession.findUnique({
       where: { id },
     });
@@ -62,19 +98,24 @@ export async function PATCH(
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    // Compute correctCount from actual answers - NEVER trust the client
-    const correctCount = await prisma.userAnswer.count({
+    // A second finish must not rewrite the score or the completion time.
+    if (existingSession.completedAt) {
+      return NextResponse.json(existingSession);
+    }
+
+    const rawCorrect = await prisma.userAnswer.count({
       where: {
         userSessionId: id,
         isCorrect: true,
       },
     });
+    const correctCount = capCorrectCount(rawCorrect, existingSession.questionCount);
 
     const userSession = await prisma.userSession.update({
       where: { id },
       data: {
         correctCount,
-        completedAt,
+        completedAt: new Date(),
       },
     });
 

@@ -44,11 +44,11 @@ That is `vitest run --config .cursor/skills/verify-exam-scoring/verification/vit
 
 ## Read the result
 
-The status line is the result. The process exit code is 0 only for `findings-only`. Exit code 0 still means the seven findings below are present.
+The status line is the result. The process exit code is 0 only for `findings-only`. With `expected-findings.json` listing no ids, exit code 0 means every held guard passed.
 
 | Status | What it is |
 | --- | --- |
-| `findings-only` | Every held property passed. Every id in `verification/expected-findings.json` failed with a counterexample that names a route, a stored field, or `ResultsPage` text. That is the steady state at the sync commit. |
+| `findings-only` | Every held property passed, and the failing spec ids are exactly the list in `verification/expected-findings.json`. That list is empty at the sync commit. |
 | `regression` | A held property failed. The score or a guard that held at the sync commit is broken. |
 | `finding-set-changed` | A spec id in `expected-findings.json` now passes (`finding-cleared`), or a spec id failed that is not listed (`unexpected`). |
 | `modeling-error` | A counterexample starts with `modeling gap` or `overlap-timeout`. The harness and the handlers disagree. |
@@ -61,7 +61,7 @@ A modeling error is the harness. `modeling gap` means a handler called a Prisma 
 
 ## Properties
 
-Held properties must pass. Spec properties are the promise. At the sync commit the spec properties fail, and the failures are the findings.
+Held properties must pass. They are the score contract. At the sync commit every property below is held and passes, and `expected-findings.json` lists no findings. A failure is a `regression`.
 
 | Id | Kind | Statement | Code |
 | --- | --- | --- | --- |
@@ -70,33 +70,22 @@ Held properties must pass. Spec properties are the promise. At the sync commit t
 | `H-NO-DOUBLE-SEQUENTIAL` | held | A second `POST` for the same session and question returns 400 and leaves the first row in place. | `findFirst` then the 400 in `POST` of `app/api/answers/route.ts` |
 | `H-OWNER` | held | Another user's `POST` is 403 and writes no row. Their `PATCH` and `GET` are 404 and leave `correctCount` at 0. The owner can still answer. | `userId` checks in `POST` of `app/api/answers/route.ts` and in `GET` and `PATCH` of `app/api/sessions/[id]/route.ts` |
 | `H-OVERALL-SCORE` | held | After finish, `ResultsPage` shows `correctCount` correct out of `questionCount`, and the `.text-5xl` node is `Math.round(correctCount / questionCount * 100)` percent. Unanswered questions stay in the denominator. A timed session shows "You passed the exam!" when that percentage is at least 70, and "You need 70% to pass" otherwise. 28/40 is 70 and passes. 27/40 rounds to 68 and does not. | `ResultsPage` in `app/results/[id]/page.tsx` |
-| `F-QUESTIONCOUNT` | spec | A stored timed session has `questionCount` 40. A stored practice session has `questionCount` 10, 20, or 40. Any other integer is rejected or coerced. The legal values still store as sent. | `POST` in `app/api/sessions/route.ts` |
-| `F-NO-ANSWER-AFTER-FINISH` | spec | After `PATCH` sets `completedAt`, a later `POST` for a different question is rejected and the row count stays put. A second question before finish is still accepted. | `POST` in `app/api/answers/route.ts` (it never reads `completedAt`) |
-| `F-NO-ANSWER-AFTER-EXPIRY` | spec | A timed session whose `startedAt + timeLimit` is in the past rejects the answer. A fresh timed session, and a practice session, still accept one. | `POST` in `app/api/answers/route.ts` (it never reads `startedAt` or `timeLimit`) |
-| `F-NO-CONCURRENT-DOUBLE` | spec | Two overlapping submits of one question leave one `UserAnswer`, and at most one response is HTTP 200. | `findFirst` and `create` in `POST` of `app/api/answers/route.ts`; `@@unique` on `UserAnswer` in `prisma/schema.prisma` |
-| `F-ASSIGNED-SET` | spec | Session create pins 10 distinct question ids for a practice session of 10, and `POST /api/answers` rejects an id outside that set. | `POST` in `app/api/sessions/route.ts` and `POST` in `app/api/answers/route.ts`. The reader is `assignedQuestionIds` in `verification/drive.ts`. |
-| `F-SCORE-BOUNDED` | spec | `correctCount` after finish is at most `questionCount`, and the results headline does not show more correct answers than that total. | `PATCH` count in `app/api/sessions/[id]/route.ts` and `ResultsPage` |
-| `F-DOMAIN-REVIEW` | spec | After finish, the sum of the domain `total` figures equals `questionCount`, and the review has one "Your answer:" row per question, including unanswered questions counted wrong. | `domainStats` reduce and `session.answers.map` in `ResultsPage` |
+| `H-FINISH-IDEMPOTENT` | held | The first `PATCH` stores `correctCount` from stored answers and `completedAt` from the server clock. A client `completedAt` of `1999-01-01` and `correctCount` 999 are ignored. A second `PATCH` leaves both fields unchanged. | `PATCH` in `app/api/sessions/[id]/route.ts` |
+| `F-QUESTIONCOUNT` | held | A timed session stores `questionCount` 40, `timeLimit` 7200, and 40 distinct `questionIds`, for every client `questionCount` from -2 through 80. The check sends `timeLimit` 60 on that search and still expects 7200. A practice session with `domain` null stores `questionCount` clamped to 1..40 (the bank). 10, 20, and 40 are stored as sent. Unknown mode `speedrun` and unknown domain `Security` return HTTP 400 and store no row. | `POST` in `app/api/sessions/route.ts` via `planSessionCreate` in `lib/session-rules.ts` |
+| `F-NO-ANSWER-AFTER-FINISH` | held | After `PATCH` sets `completedAt`, a later `POST` for a different pinned question is rejected and the row count stays put. A second pinned question before finish is still accepted. | `completedAt` check in `POST` of `app/api/answers/route.ts` |
+| `F-NO-ANSWER-AFTER-EXPIRY` | held | A timed session whose `startedAt + timeLimit` is in the past rejects the answer. A fresh timed session, and a practice session, still accept one pinned question. | `isTimedSessionExpired` in `POST` of `app/api/answers/route.ts` |
+| `F-NO-CONCURRENT-DOUBLE` | held | Two overlapping submits of one pinned question leave one `UserAnswer`, and at most one response is HTTP 200. | `findFirst` and `create` in `POST` of `app/api/answers/route.ts`; `@@unique([userSessionId, questionId])` on `UserAnswer`. The loser is the Prisma `P2002`, returned as HTTP 409. |
+| `F-ASSIGNED-SET` | held | Session create pins 10 distinct question ids for a practice session of 10, and `POST /api/answers` rejects an id outside that set. | `questionIds` on `UserSession` from `POST` in `app/api/sessions/route.ts`, checked in `POST` of `app/api/answers/route.ts`. The reader is `assignedQuestionIds` in `verification/drive.ts` (`questionIds` or `questions`). |
+| `F-SCORE-BOUNDED` | held | Every pinned question on a practice session of 10 can be answered correctly. A bank question outside that set is rejected and not stored. `correctCount` after finish is at most `questionCount`, the headline correct count does not exceed that total, and the percentage is at most 100. | membership check in `POST` of `app/api/answers/route.ts`, `capCorrectCount` in `PATCH`, and `scorePercentage` in `ResultsPage` |
+| `F-DOMAIN-REVIEW` | held | After finish, the sum of the domain `total` figures equals `questionCount`, and the review has one "Your answer:" row per pinned question, including unanswered questions counted wrong. | `buildExamReview` over `session.questions` in `ResultsPage`. `GET` attaches those questions in pinned order. |
 
-fast-check uses seed `20261103` and 25 runs (`FAST_CHECK_SEED` and `FAST_CHECK_RUNS` in `verification/properties.ts`, copied in `verification/expected-findings.json`). Spec properties print the fixed trace while that trace fails. The search runs once the fixed trace holds.
+fast-check uses seed `20261103` and 25 runs (`FAST_CHECK_SEED` and `FAST_CHECK_RUNS` in `verification/properties.ts`, copied in `verification/expected-findings.json`). A property with a fixed trace prints that trace while the trace fails. The search runs once the fixed trace holds.
 
 ## Findings
 
-These seven are the steady state. The words are the counterexamples the check prints.
+No open findings. `expected-findings.json` is an empty list. The seven ids that used to fail are held guards in the table above, plus `H-FINISH-IDEMPOTENT`.
 
-**`F-QUESTIONCOUNT`.** `POST /api/sessions` stores the client's `questionCount` with no check. `{ mode: "timed-exam", questionCount: 1, timeLimit: 7200 }` returns HTTP 200 and stores `questionCount` 1. One correct answer for `BUILD-001`, then `PATCH`, makes `ResultsPage` show 100% and "1 correct out of 1", with the pass copy. A timed exam is 40 questions. Passing 1 of 1 is not 70% of 40.
-
-**`F-NO-ANSWER-AFTER-FINISH`.** Finish now does not close the session. On practice session `sess-1`, `POST /api/answers` for `BUILD-001` returns 200, `PATCH` stores `correctCount` 1 and ignores body `correctCount` 999, then `POST /api/answers` for `BUILD-002` returns 200. A second `PATCH` stores `correctCount` 2. Two rows are stored. The answer route never looks at `completedAt`.
-
-**`F-NO-ANSWER-AFTER-EXPIRY`.** The 120 minute limit is only the timer in `ExamPage`. A timed session with `questionCount` 40 and `timeLimit` 7200, whose `startedAt` is 7201 seconds in the past, still accepts `POST /api/answers` for `BUILD-001` (HTTP 200, `isCorrect` true). `PATCH` then stores `correctCount` 1. The answer route never reads `startedAt` or `timeLimit`.
-
-**`F-NO-CONCURRENT-DOUBLE`.** Two overlapping `POST /api/answers` for `BUILD-001` both pass `findFirst` before either `create`. Both return HTTP 200 and both rows are stored, both `isCorrect` true. `prisma/schema.prisma` model `UserAnswer` has no `@@unique([userSessionId, questionId])` (the migration `prisma/migrations/20261020200257_initial/migration.sql` only indexes `userSessionId` and `questionId` separately). A later `PATCH` would add 2 to `correctCount` for one question. The sequential guard `H-NO-DOUBLE-SEQUENTIAL` still holds: one request at a time is rejected.
-
-**`F-ASSIGNED-SET`.** `POST /api/sessions` for a practice session of 10 returns keys `id, userId, mode, domain, questionCount, correctCount, startedAt, completedAt, timeLimit` and pins 0 question ids. `POST /api/answers` for `BUILD-001` returns HTTP 200 and stores a row. The session never records which questions count, so the client chooses the numerator. `GET` in `app/api/questions/route.ts` is a separate shuffle and is not tied to the session.
-
-**`F-SCORE-BOUNDED`.** A practice session with `questionCount` 10 accepts 11 correct answers (`BUILD-001` through `BUILD-010`, then `TEST-001`). `PATCH` stores `correctCount` 11. `ResultsPage` shows 110% and "11 correct out of 10".
-
-**`F-DOMAIN-REVIEW`.** Finish now on a practice session of 10 with one correct `BUILD-001` answer and nine unanswered questions: the headline is "1 correct out of 10" and 10%, so the ratio does count the nine as wrong. The domain totals sum to 1 (only Build). The review lists 1 question. `domainStats` and the review walk `session.answers` only, so they do not sum to `questionCount`.
+Sessions created before `questionIds` existed have an empty list. `POST /api/answers` still accepts any real question for those rows, and `ExamPage` falls back to `GET /api/questions`. The check never builds that legacy row. A new session always pins `questionIds`.
 
 ## Coverage
 
@@ -107,10 +96,10 @@ Confirmed against sync commit `bbdc5c7c078b2704475a7a2b8e72d2ca68e6be64`.
 | `app/api/sessions/route.ts` | `POST` |
 | `app/api/sessions/[id]/route.ts` | `GET`, `PATCH` |
 | `app/api/answers/route.ts` | `POST` |
-| `app/results/[id]/page.tsx` | `ResultsPage`: percentage, pass sentence, `domainStats` reduce, review `session.answers.map` |
-| `prisma/schema.prisma` | `UserAnswer` `@@unique` is read by `userAnswerPairIsUnique` in `verification/memory.ts` on each answer `create` |
+| `app/results/[id]/page.tsx` | `ResultsPage`: percentage, pass sentence, domain totals from `buildExamReview`, review rows including unanswered questions |
+| `prisma/schema.prisma` | `UserSession.questionIds` and `UserAnswer` `@@unique([userSessionId, questionId])`. `userAnswerPairIsUnique` in `verification/memory.ts` reads that unique on each answer `create` |
 
-The harness stands in for Prisma and for `auth()`. It is not the product. `verification/prisma-shim.ts` implements `userSession.create`, `userSession.findUnique`, `userSession.update`, `userAnswer.findFirst`, `userAnswer.count`, `userAnswer.create`, and `question.findUnique`. Anything else throws `modeling gap`. `userAnswer.create` throws `P2002` when the schema declares `@@unique` on `userSessionId` and `questionId`. `assignedQuestionIds` in `verification/drive.ts` accepts `questionIds` or `questions` (array of ids, or of `{ id }`) on the create JSON or on the stored session row.
+The harness stands in for Prisma and for `auth()`. It is not the product. `verification/prisma-shim.ts` implements `userSession.create`, `userSession.findUnique`, `userSession.update`, `userAnswer.findFirst`, `userAnswer.count`, `userAnswer.create`, `question.findUnique`, and `question.findMany` (order by id, select `{ id, domain }`, and `where: { id: { in } }`). Anything else throws `modeling gap`. `userAnswer.create` throws `P2002` when the schema declares `@@unique` on `userSessionId` and `questionId`. The product stores the pinned set as `questionIds` (string array) on the create JSON and on the session row. `assignedQuestionIds` in `verification/drive.ts` reads `questionIds` or `questions`. `GET` also returns `questions` in that order so `ResultsPage` can review unanswered rows.
 
 ## Sync commit
 
@@ -122,16 +111,16 @@ Move the hash forward only after you have re-read those functions at the new com
 
 ## Bounds and assumptions
 
-- The question bank is 40 synthetic rows in `verification/bank.ts` (10 each of Build, Test, Deploy, Monitor). It is not `data/questions.json`, and `GET` `app/api/questions/route.ts` is not called.
+- The question bank is 40 synthetic rows in `verification/bank.ts` (10 each of Build, Test, Deploy, Monitor). It is not `data/questions.json`, and `GET` `app/api/questions/route.ts` is not called. Session create reads the bank through `question.findMany`. A timed session pins every bank id because each domain has exactly 10.
 - `auth()` is stubbed as a logged-in user (`user-1`, and `user-2` for `H-OWNER`). The check does not cover a missing session (HTTP 401).
-- There is no Postgres. Time passing is done by moving the stored `startedAt` backward, which matches a handler that compares `Date.now()` with `startedAt + timeLimit`. The answer route does not read either field today.
-- The overlap is exactly two `POST /api/answers` calls, paused inside `userAnswer.findFirst` until both have entered, then both continue. Other schedules (a `PATCH` overlapping a `POST`, three submits) are not run.
+- There is no Postgres. Time passing is done by moving the stored `startedAt` backward. The answer route compares `Date.now()` with `startedAt + timeLimit` for `timed-exam` only.
+- The overlap is exactly two `POST /api/answers` calls, paused inside `userAnswer.findFirst` until both have entered, then both continue. The hook question is the first pinned id. Other schedules (a `PATCH` overlapping a `POST`, three submits) are not run.
 - `questionCount` search values are integers from -2 through 80, plus the fixed timed case of 1. Non-integers are not sent. Prisma would reject those before a row is stored; this shim is not asked to.
-- Modes other than `practice` and `timed-exam` are not constrained. Practice `domain` and a practice `timeLimit` are not constrained. Timed `timeLimit` is sent as 7200 in the traces; the expiry rule uses whatever `timeLimit` was stored.
-- The check does not require `PATCH` to replace the client's `completedAt` with the server clock. It does require that once `completedAt` is set, further answers are rejected.
+- Unknown modes and unknown domains are rejected. Practice `domain` null is mixed. A numeric practice `timeLimit` is stored and not enforced. Timed `timeLimit` is forced to 7200 even when the client sends 60. The fixed timed trace still sends 7200.
+- `H-FINISH-IDEMPOTENT` requires the server clock for `completedAt` and a no-op second finish. Once `completedAt` is set, further answers are rejected.
 - The headline percentage is the `.text-5xl` node in `ResultsPage`. Domain totals are parsed from text of the form `correct/total (percent%)`. Review rows are counted by the substring `Your answer:`. If a redesign moves the score out of those shapes, update `verification/render-results.tsx` and re-run. That edit is a harness change: re-read the page and keep the predicate.
-- `H-OVERALL-SCORE` fast-check draws up to 6 correct and 6 wrong answers on practice counts 10, 20, and 40. The 28/40 and 27/40 timed cases are fixed traces, not part of the 25 runs.
-- Reject or coerce both satisfy `F-QUESTIONCOUNT` and `F-SCORE-BOUNDED`, as long as no stored session keeps an illegal `questionCount` and `correctCount` does not exceed it. A legal 10, 20, or 40 (and timed 40) must still be stored as sent.
+- `H-OVERALL-SCORE` fast-check draws up to 6 correct and 6 wrong answers on practice counts 10, 20, and 40, capped to the pinned list so it never submits an id the session did not assign. The 28/40 and 27/40 timed cases are fixed traces, not part of the 25 runs.
+- Practice `questionCount` is clamped to 1..available, not snapped to 10, 20, or 40. Those three are still stored as sent. Timed `questionCount` is always 40. `correctCount` is capped at `questionCount`, and answers outside `questionIds` are rejected. The headline percentage is capped at 100.
 
 ## Update the verification
 
@@ -160,10 +149,10 @@ At the sync commit, each held property failed when the guard it names was broken
 
 - `GET` in `app/api/questions/route.ts` (the 10-per-domain shuffle, the practice `count` query).
 - `app/api/history/route.ts` and `app/history/page.tsx`. The history page repeats `Math.round(correctCount / questionCount * 100)` and is not rendered.
-- The client timer and the Finish now dialog in `app/exam/[id]/page.tsx`. The live header score there is `correct / answered`, which is a different ratio from the results page.
-- `app/exam/setup/page.tsx`. It sends the legal body (`questionCount` 40 and `timeLimit` 7200 for a timed exam). The check's findings are what the server does with a different body.
-- Whether `PATCH` overwrites `completedAt` with the server clock, or refuses a second finish that only rewrites the timestamp.
+- The client timer and the Finish now dialog in `app/exam/[id]/page.tsx`. The live header score there is `correct / answered`, which is a different ratio from the results page. The page loads `session.questions` from `GET` so the examinee sees the pinned set. The check does not render `ExamPage`.
+- `app/exam/setup/page.tsx`. It sends the legal body (`questionCount` 40 and `timeLimit` 7200 for a timed exam). The check is what the server does with a different body.
 - HTTP 401, and any user pair besides `user-1` and `user-2`.
+- Sessions whose `questionIds` is empty (rows created before pinning).
 - More than two overlapping answer posts, and any overlap of `PATCH` with `POST`.
 - The contents of `data/questions.json` and the seed.
 - Modes other than `practice` and `timed-exam`, practice `domain`, and practice `timeLimit`.

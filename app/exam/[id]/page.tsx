@@ -73,12 +73,18 @@ export default function ExamPage({
         const sessionData = await sessionRes.json();
         setSession(sessionData);
 
-        // Fetch questions
-        const questionsRes = await fetch(
-          `/api/questions?mode=${sessionData.mode}&domain=${sessionData.domain || ''}&count=${sessionData.questionCount}`
-        );
-        const questionsData = await questionsRes.json();
-        setQuestions(questionsData);
+        // The session pins the questions that count. Sessions created before
+        // pinning have an empty list and still load a shuffle from the bank.
+        const pinned = Array.isArray(sessionData.questions) ? sessionData.questions : [];
+        if (pinned.length > 0) {
+          setQuestions(pinned);
+        } else {
+          const questionsRes = await fetch(
+            `/api/questions?mode=${sessionData.mode}&domain=${sessionData.domain || ''}&count=${sessionData.questionCount}`
+          );
+          const questionsData = await questionsRes.json();
+          setQuestions(questionsData);
+        }
 
         // Initialize timer if timed exam
         if (sessionData.timeLimit) {
