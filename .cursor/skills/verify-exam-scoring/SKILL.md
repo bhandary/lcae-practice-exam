@@ -89,7 +89,7 @@ Sessions created before `questionIds` existed have an empty list. `POST /api/ans
 
 ## Coverage
 
-Confirmed against sync commit `bbdc5c7c078b2704475a7a2b8e72d2ca68e6be64`.
+Confirmed against sync commit `bee4ad61d930426e6df132d5cf6f50ee015b02c2`.
 
 | File | What the check executes |
 | --- | --- |
@@ -103,7 +103,7 @@ The harness stands in for Prisma and for `auth()`. It is not the product. `verif
 
 ## Sync commit
 
-`bbdc5c7c078b2704475a7a2b8e72d2ca68e6be64`
+`bee4ad61d930426e6df132d5cf6f50ee015b02c2`
 
 That commit is the product tree these predicates describe (`POST` / `GET` / `PATCH` above, `ResultsPage`, and the `UserSession` / `UserAnswer` models). The same hash is `syncCommit` in `verification/expected-findings.json`.
 
