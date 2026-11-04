@@ -95,6 +95,8 @@ model UserSession {
   startedAt     DateTime @default(now())
   completedAt   DateTime?
   timeLimit     Int?     // in seconds, null for untimed
+  // Question ids pinned at creation, in exam order. Empty on sessions created before pinning.
+  questionIds   String[] @default([])
   
   user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   answers       UserAnswer[]
@@ -115,6 +117,7 @@ model UserAnswer {
   userSession     UserSession @relation(fields: [userSessionId], references: [id], onDelete: Cascade)
   question        Question    @relation(fields: [questionId], references: [id])
   
+  @@unique([userSessionId, questionId])
   @@index([userSessionId])
   @@index([questionId])
 }

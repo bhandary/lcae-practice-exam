@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { planSessionCreate } from '@/lib/session-rules';
 
 export async function POST(request: Request) {
   try {
@@ -10,16 +11,37 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { mode, domain, questionCount, timeLimit } = body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Invalid session body' }, { status: 400 });
+    }
 
-    // Create new user session
+    const questions = await prisma.question.findMany({
+      orderBy: { id: 'asc' },
+      select: {
+        id: true,
+        domain: true,
+      },
+    });
+
+    const plan = planSessionCreate({
+      mode: body.mode,
+      domain: body.domain,
+      questionCount: body.questionCount,
+      timeLimit: body.timeLimit,
+      questions,
+    });
+    if (!plan.ok) {
+      return NextResponse.json({ error: plan.error }, { status: 400 });
+    }
+
     const userSession = await prisma.userSession.create({
       data: {
         userId: session.user.id,
-        mode,
-        domain: domain || null,
-        questionCount,
-        timeLimit: timeLimit || null,
+        mode: plan.mode,
+        domain: plan.domain,
+        questionCount: plan.questionCount,
+        timeLimit: plan.timeLimit,
+        questionIds: plan.questionIds,
       },
     });
 

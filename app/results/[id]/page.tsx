@@ -6,6 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { CheckCircle2, XCircle, Home, History, Trophy, AlertCircle } from 'lucide-react';
+import {
+  buildExamReview,
+  capCorrectCount,
+  scorePercentage,
+  tallyDomains,
+} from '@/lib/session-rules';
 
 interface Question {
   id: string;
@@ -38,6 +44,7 @@ interface Session {
   startedAt: string;
   completedAt: string;
   timeLimit: number | null;
+  questions?: Question[];
   answers: Answer[];
 }
 
@@ -73,22 +80,20 @@ export default function ResultsPage({
     );
   }
 
-  const percentage = Math.round((session.correctCount / session.questionCount) * 100);
+  const shownCorrect = capCorrectCount(session.correctCount, session.questionCount);
+  const percentage = scorePercentage(shownCorrect, session.questionCount);
   const isTimedExam = session.mode === 'timed-exam';
   const passed = percentage >= 70;
 
-  // Domain breakdown
-  const domainStats = session.answers.reduce((acc, answer) => {
-    const domain = answer.question.domain;
-    if (!acc[domain]) {
-      acc[domain] = { total: 0, correct: 0 };
-    }
-    acc[domain].total++;
-    if (answer.isCorrect) {
-      acc[domain].correct++;
-    }
-    return acc;
-  }, {} as Record<string, { total: number; correct: number }>);
+  // Every pinned question is reviewed. Unanswered questions count as wrong,
+  // so the domain totals and the review match correctCount / questionCount.
+  const review = buildExamReview(session.questions, session.answers);
+  const domainStats = tallyDomains(
+    review.map((row) => ({
+      isCorrect: row.isCorrect,
+      domain: row.question.domain,
+    }))
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
@@ -142,7 +147,7 @@ export default function ResultsPage({
               <div className="text-center space-y-2">
                 <div className="text-5xl font-bold">{percentage}%</div>
                 <div className="text-muted-foreground">
-                  {session.correctCount} correct out of {session.questionCount}
+                  {shownCorrect} correct out of {session.questionCount}
                 </div>
                 <Progress value={percentage} className="h-3 mt-4" />
               </div>
@@ -168,7 +173,10 @@ export default function ResultsPage({
               {Object.entries(domainStats)
                 .sort(([a], [b]) => a.localeCompare(b))
                 .map(([domain, stats]) => {
-                  const domainPercentage = Math.round((stats.correct / stats.total) * 100);
+                  const domainPercentage = Math.min(
+                    100,
+                    Math.round((stats.correct / stats.total) * 100)
+                  );
                   return (
                     <div key={domain} className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
@@ -192,36 +200,36 @@ export default function ResultsPage({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {session.answers.map((answer, index) => (
+              {review.map((row, index) => (
                 <div
-                  key={answer.id}
+                  key={row.key}
                   className="p-4 rounded-lg border space-y-2"
                 >
                   <div className="flex items-start gap-3">
-                    {answer.isCorrect ? (
+                    {row.isCorrect ? (
                       <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
                     ) : (
                       <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
                     )}
                     <div className="flex-1 space-y-2">
                       <p className="text-sm font-semibold">
-                        Question {index + 1} - {answer.question.domain}
+                        Question {index + 1} - {row.question.domain}
                       </p>
-                      <p className="text-sm">{answer.question.question}</p>
+                      <p className="text-sm">{row.question.question}</p>
                       <div className="text-sm space-y-1">
                         <p>
-                          Your answer: <strong>{answer.selectedAnswer}</strong>
+                          Your answer: <strong>{row.unanswered ? 'Unanswered' : row.selectedAnswer}</strong>
                           <span className="text-muted-foreground">
                             {' '}
-                            (Correct: <strong>{answer.question.answer}</strong>)
+                            (Correct: <strong>{row.question.answer}</strong>)
                           </span>
                         </p>
                         <p className="text-muted-foreground">
-                          {answer.question.justification}
+                          {row.question.justification}
                         </p>
-                        {answer.question.source && (
+                        {row.question.source && (
                           <p className="text-xs text-muted-foreground">
-                            Source: {answer.question.source}
+                            Source: {row.question.source}
                           </p>
                         )}
                       </div>
